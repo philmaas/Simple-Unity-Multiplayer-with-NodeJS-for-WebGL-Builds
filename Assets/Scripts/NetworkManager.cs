@@ -1,373 +1,343 @@
-﻿// Client side script adapted from the video tutorial series for unity multiplayer networking with socket io riginally by Adam Carnagey
-// Link to original video tutorial series: https://www.youtube.com/watch?v=tn3cWcSYmHE&list=PLH83kaN0EWK5wkiNhGlhfSI_nGDcR1DX8&index=1
-// Link to original github repo: https://github.com/acarnagey/Unity-Multiplayer-Networking-NodeJS
-// Link to this adaptation: https://github.com/arigbs/Simple-Unity-Multiplayer-with-NodeJS-for-WebGL-Builds.git
-
-// Adapted by Ayodele Arigbabu in January 2019 and provided under an ISC license (https://en.wikipedia.org/wiki/ISC_license), 
-// to work with the asset 'SocketIO for Native and Webgl builds' by Daspete
-// assetstore link here: https://assetstore.unity.com/packages/tools/network/socketio-for-native-and-webgl-builds-76508
-
-using UnityEngine;
+﻿using UnityEngine;
 using System.Collections;
-using UnitySocketIO;
-using UnitySocketIO.Events;
 using System;
 using System.Collections.Generic;
 using UnityEngine.UI;
-
+using SocketIO;
 
 public class NetworkManager : MonoBehaviour {
 
-    public static NetworkManager instance;
-    public Canvas canvas;
-    public SocketIOController socket;
-    public InputField playerNameInput;
-    public GameObject player;
+	public static NetworkManager instance;
+	public Canvas canvas;
+	public SocketIOComponent socket;
+	public InputField playerNameInput;
+	public GameObject player;
 
+	void Awake()
+	{
+		if (instance == null)
+			instance = this;
+		else if (instance != this)
+			Destroy(gameObject);
+		DontDestroyOnLoad(gameObject);
+	}
 
-    void Awake()
-    {
-        if (instance == null)
-            instance = this;
+	// Use this for initialization
+	void Start () {
+		// subscribe to all the various websocket events
+		socket.On("enemies", OnEnemies);
+		socket.On("other player connected", OnOtherPlayerConnected);
+		socket.On("play", OnPlay);
+		socket.On("player move", OnPlayerMove);
+		socket.On("player turn", OnPlayerTurn);
+		socket.On("player shoot", OnPlayerShoot);
+		socket.On("health", OnHealth);
+		socket.On("other player disconnected", OnOtherPlayerDisconnect);
+	}
 
-        // uncommenting the lines below stops the player / enemy prefabs in brower clients (WebGL) from appearing while they still appear in the unity client.
-        /*    else if (instance != this)
-                Destroy(gameObject);
-        */
-        DontDestroyOnLoad(gameObject); // We can retain this so player / enemy prefabs persist between scenes
-    }
+	public void JoinGame()
+	{
+		StartCoroutine(ConnectToServer());
+	}
 
-    void Start() {
+	#region Commands
 
-        // subscribe to all the various websocket events
-        socket.On("enemies", OnEnemies);
-        socket.On("other player connected", OnOtherPlayerConnected);
-        socket.On("play", OnPlay);
-        socket.On("player move", OnPlayerMove);
-        socket.On("player turn", OnPlayerTurn);
-        socket.On("player shoot", OnPlayerShoot);
-        socket.On("health", OnHealth);
-        socket.On("other player disconnected", OnOtherPlayerDisconnect);
+	IEnumerator ConnectToServer()
+	{
+		yield return new WaitForSeconds(0.5f);
 
-        socket.On("connect", (SocketIOEvent e) => {
-            Debug.Log("SocketIO connected");
-            socket.Emit("player linked");
-        });
+		socket.Emit("player connect");
 
-        socket.Connect();
-    }
+		yield return new WaitForSeconds(1f);
 
-    public void JoinGame()
-    {
-        StartCoroutine(ConnectToServer());
-    }
+		string playerName = playerNameInput.text;
+		List<SpawnPoint> playerSpawnPoints = GetComponent<PlayerSpawner>().playerSpawnPoints;
+		List<SpawnPoint> enemySpawnPoints = GetComponent<EnemySpawner>().enemySpawnPoints;
+		PlayerJSON playerJSON = new PlayerJSON(playerName, playerSpawnPoints, enemySpawnPoints);
+		string data = JsonUtility.ToJson(playerJSON);
+		socket.Emit("play", new JSONObject(data));
+		canvas.gameObject.SetActive(false);
+	}
 
-    #region Commands
+	public void CommandMove(Vector3 vec3)
+	{
+		string data = JsonUtility.ToJson(new PositionJSON(vec3));
+		socket.Emit("player move", new JSONObject(data));
+	}
 
-    IEnumerator ConnectToServer()
-    {
-        yield return new WaitForSeconds(0.5f);
+	public void CommandTurn(Quaternion quat)
+	{
+		string data = JsonUtility.ToJson(new RotationJSON(quat));
+		socket.Emit("player turn", new JSONObject(data));
+	}
 
-        socket.Emit("player connect");
+	public void CommandShoot()
+	{
+		print("Shoot");
+		socket.Emit("player shoot");
+	}
 
-        yield return new WaitForSeconds(1f);
+	public void CommandHealthChange(GameObject playerFrom, GameObject playerTo, int healthChange, bool isEnemy)
+	{
+		print("health change cmd");
+		HealthChangeJSON healthChangeJSON = new HealthChangeJSON(playerTo.name, healthChange, playerFrom.name, isEnemy);
+		socket.Emit("health", new JSONObject(JsonUtility.ToJson(healthChangeJSON)));
+	}
 
-        string playerName = playerNameInput.text;
-        List<SpawnPoint> playerSpawnPoints = GetComponent<PlayerSpawner>().playerSpawnPoints;
-        List<SpawnPoint> enemySpawnPoints = GetComponent<EnemySpawner>().enemySpawnPoints;
-        PlayerJSON playerJSON = new PlayerJSON(playerName, playerSpawnPoints, enemySpawnPoints);
-        string data = JsonUtility.ToJson(playerJSON);
-        Debug.Log("this is the JsonUtility data:" + data);
+	#endregion
 
-        socket.Emit("play", JsonUtility.ToJson(playerJSON));
+	#region Listening
 
-        canvas.gameObject.SetActive(false);
-    }
+	void OnEnemies(SocketIOEvent socketIOEvent)
+	{
+		EnemiesJSON enemiesJSON = EnemiesJSON.CreateFromJSON(socketIOEvent.data.ToString());
+		EnemySpawner es = GetComponent<EnemySpawner>();
+		es.SpawnEnemies(enemiesJSON);
+	}
 
-    public void CommandMove(Vector3 vec3)
-    {
-        string data = JsonUtility.ToJson(new PositionJSON(vec3));
-            socket.Emit("player move", JsonUtility.ToJson(new PositionJSON(vec3)));
-    }
+	void OnOtherPlayerConnected(SocketIOEvent socketIOEvent)
+	{
+		print("Someone else joined");
+		string data = socketIOEvent.data.ToString();
+		UserJSON userJSON = UserJSON.CreateFromJSON(data);
+		Vector3 position = new Vector3(userJSON.position[0], userJSON.position[1], userJSON.position[2]);
+		Quaternion rotation = Quaternion.Euler(userJSON.rotation[0], userJSON.rotation[1], userJSON.rotation[2]);
+		GameObject o = GameObject.Find(userJSON.name) as GameObject;
+		if (o != null)
+		{
+			return;
+		}
+		GameObject p = Instantiate(player, position, rotation) as GameObject;
+		// here we are setting up their other fields name and if they are local
+		PlayerController pc = p.GetComponent<PlayerController>();
+		Transform t = p.transform.Find("Healthbar Canvas");
+		Transform t1 = t.transform.Find("Player Name");
+		Text playerName = t1.GetComponent<Text>();
+		playerName.text = userJSON.name;
+		pc.isLocalPlayer = false;
+		p.name = userJSON.name;
+		// we also need to set the health
+		Health h = p.GetComponent<Health>();
+		h.currentHealth = userJSON.health;
+		h.OnChangeHealth();
+	}
+	void OnPlay(SocketIOEvent socketIOEvent)
+	{
+		print("you joined");
+		string data = socketIOEvent.data.ToString();
+		UserJSON currentUserJSON = UserJSON.CreateFromJSON(data);
+		Vector3 position = new Vector3(currentUserJSON.position[0], currentUserJSON.position[1], currentUserJSON.position[2]);
+		Quaternion rotation = Quaternion.Euler(currentUserJSON.rotation[0], currentUserJSON.rotation[1], currentUserJSON.rotation[2]);
+		GameObject p = Instantiate(player, position, rotation) as GameObject;
+		PlayerController pc = p.GetComponent<PlayerController>();
+		Transform t = p.transform.Find("Healthbar Canvas");
+		Transform t1 = t.transform.Find("Player Name");
+		Text playerName = t1.GetComponent<Text>();
+		playerName.text = currentUserJSON.name;
+		pc.isLocalPlayer = true;
+		p.name = currentUserJSON.name;
 
-    public void CommandTurn(Quaternion quat)
-    {
-        string data = JsonUtility.ToJson(new RotationJSON(quat));
-           socket.Emit("player turn", JsonUtility.ToJson(new RotationJSON(quat)));
-    }
+	}
+	void OnPlayerMove(SocketIOEvent socketIOEvent)
+	{
+		string data = socketIOEvent.data.ToString();
+		UserJSON userJSON = UserJSON.CreateFromJSON(data);
+		Vector3 position = new Vector3(userJSON.position[0], userJSON.position[1], userJSON.position[2]);
+		// if it is the current player exit
+		if (userJSON.name == playerNameInput.text)
+		{
+			return;
+		}
+		GameObject p = GameObject.Find(userJSON.name) as GameObject;
+		if (p != null)
+		{
+			p.transform.position = position;
+		}
+	}
+	void OnPlayerTurn(SocketIOEvent socketIOEvent)
+	{
+		string data = socketIOEvent.data.ToString();
+		UserJSON userJSON = UserJSON.CreateFromJSON(data);
+		Quaternion rotation = Quaternion.Euler(userJSON.rotation[0], userJSON.rotation[1], userJSON.rotation[2]);
+		// if it is the current player exit
+		if (userJSON.name == playerNameInput.text)
+		{
+			return;
+		}
+		GameObject p = GameObject.Find(userJSON.name) as GameObject;
+		if (p != null)
+		{
+			p.transform.rotation = rotation;
+		}
+	}
+	void OnPlayerShoot(SocketIOEvent socketIOEvent)
+	{
+		string data = socketIOEvent.data.ToString();
+		ShootJSON shootJSON = ShootJSON.CreateFromJSON(data);
+		//find the gameobject
+		GameObject p = GameObject.Find(shootJSON.name);
+		// instantiate the bullet etc from the player script
+		PlayerController pc = p.GetComponent<PlayerController>();
+		pc.CmdFire();
+	}
 
-    public void CommandShoot()
-    {
-        print("Shoot");
-        socket.Emit("player shoot");
-    }
+	void OnHealth(SocketIOEvent socketIOEvent)
+	{
+		print("changing the health");
+		// get the name of the player whose health changed
+		string data = socketIOEvent.data.ToString();
+		UserHealthJSON userHealthJSON = UserHealthJSON.CreateFromJSON(data);
+		GameObject p = GameObject.Find(userHealthJSON.name);
+		Health h = p.GetComponent<Health>();
+		h.currentHealth = userHealthJSON.health;
+		h.OnChangeHealth();
+	}
 
-    public void CommandHealthChange(GameObject playerFrom, GameObject playerTo, int healthChange, bool isEnemy)
-    {
-        print("health change cmd");
-        HealthChangeJSON healthChangeJSON = new HealthChangeJSON(playerTo.name, healthChange, playerFrom.name, isEnemy);
-            socket.Emit("health", JsonUtility.ToJson(healthChangeJSON));
-    }
+	void OnOtherPlayerDisconnect(SocketIOEvent socketIOEvent)
+	{
+		print("user disconnected");
+		string data = socketIOEvent.data.ToString();
+		UserJSON userJSON = UserJSON.CreateFromJSON(data);
+		Destroy(GameObject.Find(userJSON.name));
+	}
 
-    #endregion
+	#endregion
 
+	#region JSONMessageClasses
 
-    #region Listening
+	[Serializable]
+	public class PlayerJSON
+	{
+		public string name;
+		public List<PointJSON> playerSpawnPoints;
+		public List<PointJSON> enemySpawnPoints;
 
-    void OnEnemies(SocketIOEvent socketIOEvent)
-    {
-        EnemiesJSON enemiesJSON = EnemiesJSON.CreateFromJSON(socketIOEvent.data.ToString());
-        EnemySpawner es = GetComponent<EnemySpawner>();
-        es.SpawnEnemies(enemiesJSON);
-    }
+		public PlayerJSON(string _name, List<SpawnPoint> _playerSpawnPoints, List<SpawnPoint> _enemySpawnPoints)
+		{
+			playerSpawnPoints = new List<PointJSON>();
+			enemySpawnPoints = new List<PointJSON>();
+			name = _name;
+			foreach (SpawnPoint playerSpawnPoint in _playerSpawnPoints)
+			{
+				PointJSON pointJSON = new PointJSON(playerSpawnPoint);
+				playerSpawnPoints.Add(pointJSON);
+			}
+			foreach (SpawnPoint enemySpawnPoint in _enemySpawnPoints)
+			{
+				PointJSON pointJSON = new PointJSON(enemySpawnPoint);
+				enemySpawnPoints.Add(pointJSON);
+			}
+		}
+	}
 
-    void OnOtherPlayerConnected(SocketIOEvent socketIOEvent)
-    {
-        print("Someone else joined");
-        string data = socketIOEvent.data.ToString();
-        UserJSON userJSON = UserJSON.CreateFromJSON(data);
-        Vector3 position = new Vector3(userJSON.position[0], userJSON.position[1], userJSON.position[2]);
-        Quaternion rotation = Quaternion.Euler(userJSON.rotation[0], userJSON.rotation[1], userJSON.rotation[2]);
-        GameObject o = GameObject.Find(userJSON.name) as GameObject;
-        if (o != null)
-        {
-            return;
-        }
-        GameObject p = Instantiate(player, position, rotation) as GameObject;
-        // here we are setting up their other fields name and if they are local
-        PlayerController pc = p.GetComponent<PlayerController>();
-        Transform t = p.transform.Find("Healthbar Canvas");
-        Transform t1 = t.transform.Find("Player Name");
-        Text playerName = t1.GetComponent<Text>();
-        playerName.text = userJSON.name;
-        pc.isLocalPlayer = false;
-        p.name = userJSON.name;
-        // we also need to set the health
-        Health h = p.GetComponent<Health>();
-        h.currentHealth = userJSON.health;
-        h.OnChangeHealth();
-    }
+	[Serializable]
+	public class PointJSON
+	{
+		public float[] position;
+		public float[] rotation;
+		public PointJSON(SpawnPoint spawnPoint)
+		{
+			position = new float[] {
+				spawnPoint.transform.position.x,
+				spawnPoint.transform.position.y,
+				spawnPoint.transform.position.z
+			};
+			rotation = new float[] {
+				spawnPoint.transform.eulerAngles.x,
+				spawnPoint.transform.eulerAngles.y,
+				spawnPoint.transform.eulerAngles.z
+			};
+		}
+	}
 
-    void OnPlay(SocketIOEvent socketIOEvent)
-    {
-        print("you joined");
-        string data = socketIOEvent.data.ToString();
-        UserJSON currentUserJSON = UserJSON.CreateFromJSON(data);
-        Vector3 position = new Vector3(currentUserJSON.position[0], currentUserJSON.position[1], currentUserJSON.position[2]);
-        Quaternion rotation = Quaternion.Euler(currentUserJSON.rotation[0], currentUserJSON.rotation[1], currentUserJSON.rotation[2]);
-        GameObject p = Instantiate(player, position, rotation) as GameObject;
-        PlayerController pc = p.GetComponent<PlayerController>();
-        Transform t = p.transform.Find("Healthbar Canvas");
-        Transform t1 = t.transform.Find("Player Name");
-        Text playerName = t1.GetComponent<Text>();
-        playerName.text = currentUserJSON.name;
-        pc.isLocalPlayer = true;
-        p.name = currentUserJSON.name;
+	[Serializable]
+	public class PositionJSON
+	{
+		public float[] position;
 
-    }
+		public PositionJSON(Vector3 _position)
+		{
+			position = new float[] { _position.x, _position.y, _position.z };
+		}
+	}
 
-    void OnPlayerMove(SocketIOEvent socketIOEvent)
-    {
-        string data = socketIOEvent.data.ToString();
-        UserJSON userJSON = UserJSON.CreateFromJSON(data);
-        Vector3 position = new Vector3(userJSON.position[0], userJSON.position[1], userJSON.position[2]);
-        // if it is the current player exit
-        if (userJSON.name == playerNameInput.text)
-        {
-            return;
-        }
-        GameObject p = GameObject.Find(userJSON.name) as GameObject;
-        if (p != null)
-        {
-            p.transform.position = position;
-        }
-    }
-    void OnPlayerTurn(SocketIOEvent socketIOEvent)
-    {
-        string data = socketIOEvent.data.ToString();
-        UserJSON userJSON = UserJSON.CreateFromJSON(data);
-        Quaternion rotation = Quaternion.Euler(userJSON.rotation[0], userJSON.rotation[1], userJSON.rotation[2]);
-        // if it is the current player exit
-        if (userJSON.name == playerNameInput.text)
-        {
-            return;
-        }
-        GameObject p = GameObject.Find(userJSON.name) as GameObject;
-        if (p != null)
-        {
-            p.transform.rotation = rotation;
-        }
-    }
-    void OnPlayerShoot(SocketIOEvent socketIOEvent)
-    {
-        string data = socketIOEvent.data.ToString();
-        ShootJSON shootJSON = ShootJSON.CreateFromJSON(data);
-        //find the gameobject
-        GameObject p = GameObject.Find(shootJSON.name);
-        // instantiate the bullet etc from the player script
-        PlayerController pc = p.GetComponent<PlayerController>();
-        pc.CmdFire();
-    }
+	[Serializable]
+	public class RotationJSON
+	{
+		public float[] rotation;
 
-    void OnHealth(SocketIOEvent socketIOEvent)
-    {
-        print("changing the health");
-        // get the name of the player whose health changed
-        string data = socketIOEvent.data.ToString();
-        UserHealthJSON userHealthJSON = UserHealthJSON.CreateFromJSON(data);
-        GameObject p = GameObject.Find(userHealthJSON.name);
-        Health h = p.GetComponent<Health>();
-        h.currentHealth = userHealthJSON.health;
-        h.OnChangeHealth();
-    }
+		public RotationJSON(Quaternion _rotation)
+		{
+			rotation = new float[] { _rotation.eulerAngles.x,
+				_rotation.eulerAngles.y, 
+				_rotation.eulerAngles.z };
+		}
+	}
 
-    void OnOtherPlayerDisconnect(SocketIOEvent socketIOEvent)
-    {
-        print("user disconnected");
-        string data = socketIOEvent.data.ToString();
-        UserJSON userJSON = UserJSON.CreateFromJSON(data);
-        Destroy(GameObject.Find(userJSON.name));
-    }
+	[Serializable]
+	public class UserJSON
+	{
+		public string name;
+		public float[] position;
+		public float[] rotation;
+		public int health;
 
-#endregion
+		public static UserJSON CreateFromJSON(string data)
+		{
+			return JsonUtility.FromJson<UserJSON>(data);
+		}
+	}
 
+	[Serializable]
+	public class HealthChangeJSON
+	{
+		public string name;
+		public int healthChange;
+		public string from;
+		public bool isEnemy;
 
-    #region JSONMessageClasses
+		public HealthChangeJSON(string _name, int _healthChange, string _from, bool _isEnemy)
+		{
+			name = _name;
+			healthChange = _healthChange;
+			from = _from;
+			isEnemy = _isEnemy;
+		}
+	}
 
-    [Serializable]
-    public class PlayerJSON
-    {
-        public string name;
-        public List<PointJSON> playerSpawnPoints;
-        public List<PointJSON> enemySpawnPoints;
+	[Serializable]
+	public class EnemiesJSON
+	{
+		public List<UserJSON> enemies;
 
-        public PlayerJSON(string _name, List<SpawnPoint> _playerSpawnPoints, List<SpawnPoint> _enemySpawnPoints)
-        {
-            playerSpawnPoints = new List<PointJSON>();
-            enemySpawnPoints = new List<PointJSON>();
-            name = _name;
-            foreach (SpawnPoint playerSpawnPoint in _playerSpawnPoints)
-            {
-                PointJSON pointJSON = new PointJSON(playerSpawnPoint);
-                playerSpawnPoints.Add(pointJSON);
-            }
-            foreach (SpawnPoint enemySpawnPoint in _enemySpawnPoints)
-            {
-                PointJSON pointJSON = new PointJSON(enemySpawnPoint);
-                enemySpawnPoints.Add(pointJSON);
-            }
-        }
-    }
+		public static EnemiesJSON CreateFromJSON(string data)
+		{
+			return JsonUtility.FromJson<EnemiesJSON>(data);
+		}
+	}
 
-    [Serializable]
-    public class PointJSON
-    {
-        public float[] position;
-        public float[] rotation;
-        public PointJSON(SpawnPoint spawnPoint)
-        {
-            position = new float[] {
-                spawnPoint.transform.position.x,
-                spawnPoint.transform.position.y,
-                spawnPoint.transform.position.z
-            };
-            rotation = new float[] {
-                spawnPoint.transform.eulerAngles.x,
-                spawnPoint.transform.eulerAngles.y,
-                spawnPoint.transform.eulerAngles.z
-            };
-        }
-    }
+	[Serializable]
+	public class ShootJSON
+	{
+		public string name;
 
-    [Serializable]
-    public class PositionJSON
-    {
-        public float[] position;
+		public static ShootJSON CreateFromJSON(string data)
+		{
+			return JsonUtility.FromJson<ShootJSON>(data);
+		}
+	}
 
-        public PositionJSON(Vector3 _position)
-        {
-            position = new float[] { _position.x, _position.y, _position.z };
-        }
-    }
+	[Serializable]
+	public class UserHealthJSON
+	{
+		public string name;
+		public int health;
 
-    [Serializable]
-    public class RotationJSON
-    {
-        public float[] rotation;
+		public static UserHealthJSON CreateFromJSON(string data)
+		{
+			return JsonUtility.FromJson<UserHealthJSON>(data);
+		}
+	}
 
-        public RotationJSON(Quaternion _rotation)
-        {
-            rotation = new float[] { _rotation.eulerAngles.x,
-                _rotation.eulerAngles.y,
-                _rotation.eulerAngles.z };
-        }
-    }
-
-    [Serializable]
-    public class UserJSON
-    {
-        public string name;
-        public float[] position;
-        public float[] rotation;
-        public int health;
-
-        public static UserJSON CreateFromJSON(string data)
-        {
-            return JsonUtility.FromJson<UserJSON>(data);
-        }
-    }
-
-    [Serializable]
-    public class HealthChangeJSON
-    {
-        public string name;
-        public int healthChange;
-        public string from;
-        public bool isEnemy;
-
-        public HealthChangeJSON(string _name, int _healthChange, string _from, bool _isEnemy)
-        {
-            name = _name;
-            healthChange = _healthChange;
-            from = _from;
-            isEnemy = _isEnemy;
-        }
-    }
-
-    [Serializable]
-    public class EnemiesJSON
-    {
-        public List<UserJSON> enemies;
-
-        public static EnemiesJSON CreateFromJSON(string data)
-        {
-            return JsonUtility.FromJson<EnemiesJSON>(data);
-        }
-    }
-
-    [Serializable]
-    public class ShootJSON
-    {
-        public string name;
-
-        public static ShootJSON CreateFromJSON(string data)
-        {
-            return JsonUtility.FromJson<ShootJSON>(data);
-        }
-    }
-
-    [Serializable]
-    public class UserHealthJSON
-    {
-        public string name;
-        public int health;
-
-        public static UserHealthJSON CreateFromJSON(string data)
-        {
-            return JsonUtility.FromJson<UserHealthJSON>(data);
-        }
-    }
-
-    #endregion
-
+	#endregion
 }

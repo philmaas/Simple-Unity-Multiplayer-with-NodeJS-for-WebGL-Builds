@@ -36,17 +36,17 @@ public class PlayerController : MonoBehaviour {
 		currentRotation = transform.rotation;
 
 		if (currentPosition != oldPosition) {
-            NetworkManager.instance.GetComponent<NetworkManager>().CommandMove(transform.position);
+			NetworkManager.instance.GetComponent<NetworkManager>().CommandMove(transform.position);
 			oldPosition = currentPosition;
 		}
 
 		if (currentRotation != oldRotation) {
-            NetworkManager.instance.GetComponent<NetworkManager>().CommandTurn(transform.rotation);
+			NetworkManager.instance.GetComponent<NetworkManager>().CommandTurn(transform.rotation);
 			oldRotation = currentRotation;
 		}
 
 		if (Input.GetKeyDown (KeyCode.Space)) {
-            NetworkManager n = NetworkManager.instance.GetComponent<NetworkManager>();
+			NetworkManager n = NetworkManager.instance.GetComponent<NetworkManager>();
 			n.CommandShoot();
 		}
 	}
@@ -55,12 +55,12 @@ public class PlayerController : MonoBehaviour {
 		var bullet = Instantiate(bulletPrefab, 
 		                         bulletSpawn.position, 
 		                         bulletSpawn.rotation) as GameObject;
-
 		Bullet b = bullet.GetComponent<Bullet>();
 		b.playerFrom = this.gameObject;
-		bullet.GetComponent<Rigidbody>().velocity = bullet.transform.up * 120;
-
-		Destroy(bullet, 3.0f);
-
+		print("setting the velocity");
+		print(bullet.transform.up);
+		bullet.GetComponent<Rigidbody>().isKinematic = false;
+		bullet.GetComponent<Rigidbody>().AddForce(bullet.transform.up * 6, ForceMode.VelocityChange);
+		Destroy(bullet, 2.0f);
 	}
 }
